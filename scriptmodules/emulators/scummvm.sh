@@ -11,9 +11,10 @@
 
 rp_module_id="scummvm"
 rp_module_desc="ScummVM"
-rp_module_help="Copy your ScummVM games to $romdir/scummvm"
+rp_module_help="Copy your ScummVM games to $romdir/scummvm.\nSee https://retropie.org.uk/docs/ScummVM/#example\nfor expected folders and files."
 rp_module_licence="GPL2 https://raw.githubusercontent.com/scummvm/scummvm/master/COPYING"
-rp_module_repo="git https://github.com/scummvm/scummvm.git v2.2.0"
+###rp_module_repo="git https://github.com/scummvm/scummvm.git v2.2.0"
+rp_module_repo="git https://github.com/scummvm/scummvm.git master"
 rp_module_section="opt"
 rp_module_flags="sdl2"
 
@@ -41,17 +42,11 @@ function sources_scummvm() {
 function build_scummvm() {
     local params=(
         --enable-release --enable-vkeybd
-        --disable-debug --disable-eventrecorder --prefix="$md_inst"
+        --disable-debug --disable-eventrecorder
+        --prefix="$md_inst" --opengl-mode=auto
     )
-    isPlatform "rpi" && isPlatform "32bit" && params+=(--host=raspberrypi)
-    isPlatform "gles" && params+=(--opengl-mode=gles2)
-    # stop scummvm using arm-linux-gnueabihf-g++ which is v4.6 on
-    # wheezy and doesn't like rpi2 cpu flags
-    if isPlatform "rpi"; then
-        CC="gcc" CXX="g++" ./configure "${params[@]}"
-    else
-        ./configure "${params[@]}"
-    fi
+    isPlatform "gles" && params+=(--force-opengl-game-es2)
+    ./configure "${params[@]}"
     make clean
     make
     strip "$md_build/scummvm"
@@ -77,15 +72,48 @@ function configure_scummvm() {
     local name="ScummVM"
     [[ "$md_id" == "scummvm-sdl1" ]] && name="ScummVM-SDL1"
     cat > "$romdir/scummvm/+Start $name.sh" << _EOF_
-#!/bin/bash
-game="\$1"
-pushd "$romdir/scummvm" >/dev/null
-$md_inst/bin/scummvm --fullscreen --joystick=0 --extrapath="$md_inst/extra" \$game
-while read id desc; do
-    echo "\$desc" > "$romdir/scummvm/\$id.svm"
-done < <($md_inst/bin/scummvm --list-targets | tail -n +3)
+#! /bin/bash
+
+folder="\$1"
+
+emu_home="$md_inst"
+scummvm_bin="\$emu_home/bin/scummvm"
+rom_home="$romdir/scummvm"
+scummvm_ini="\$HOME/.config/scummvm/scummvm.ini"
+
+pushd "\$rom_home" >/dev/null
+
+params=(
+  --fullscreen
+  --joystick=0
+  --gfx-mode=hq3x
+  --extrapath="\$emu_home/extra"
+  --path="\$folder"
+  --stretch-mode=stretch
+)
+# enable for verbose log
+#params+=(--debuglevel=3)
+
+# expect <game_dir>/<game_dir>.svm
+game_id=\$(cat "\$rom_home/\$folder/\$folder.svm" | xargs)
+
+# check if gameid (=short game name) is present (maybe absent on first start)
+if [[ -z "\$game_id" ]] ; then
+  # first column of --detect after GameID contains <engine>:<gameid>
+  game_id=\$("\$scummvm_bin" --detect --path="\$folder" | grep -A 2 "GameID" | tail +3 | cut -f 1 -d ' ' | cut -f 2 -d ':')
+  echo "\$game_id" > "\$rom_home/\$folder/\$folder.svm"
+fi
+
+if [[ \$(grep -c "gameid=\$game_id" "\$scummvm_ini") -eq 0 ]]; then
+  # create an entry in ~/.config/scummvm/scummvm.ini for customisation
+  "\$scummvm_bin" --add --path="\$folder" >/dev/null 2>&1
+fi
+
+"\$scummvm_bin" "\${params[@]}" "\$game_id"
+
 popd >/dev/null
 _EOF_
+
     chown $user:$user "$romdir/scummvm/+Start $name.sh"
     chmod u+x "$romdir/scummvm/+Start $name.sh"
 
