@@ -11,7 +11,7 @@
 
 rp_module_id="lr-scummvm"
 rp_module_desc="ScummVM port for libretro"
-rp_module_help="Copy your ScummVM games to $romdir/scummvm\n\nThe name of your game directories must be suffixed with '.svm' for direct launch in EmulationStation."
+rp_module_help="Copy your ScummVM games to $romdir/scummvm\n\nSee https://retropie.org.uk/docs/ScummVM/#example\nfor expected folders and files."
 rp_module_licence="GPL3 https://raw.githubusercontent.com/libretro/scummvm/main/LICENSE"
 rp_module_repo="git https://github.com/libretro/scummvm.git main"
 rp_module_section="exp"
@@ -52,10 +52,11 @@ function configure_lr-scummvm() {
     runCmd unzip -q "$md_inst/scummvm.zip" -d "$biosdir"
     chown -R $user:$user "$biosdir/scummvm"
 
+    local scummvm_ini="$biosdir/scummvm.ini"
     # basic initial configuration (if config file not found)
-    if [[ ! -f "$biosdir/scummvm.ini" ]]; then
-        echo "[scummvm]" > "$biosdir/scummvm.ini"
-        iniConfig "=" "" "$biosdir/scummvm.ini"
+    if [[ ! -f "$scummvm_ini" ]]; then
+        echo "[scummvm]" > "$scummvm_ini"
+        iniConfig "=" "" "$scummvm_ini"
         iniSet "extrapath" "$biosdir/scummvm/extra"
         iniSet "themepath" "$biosdir/scummvm/theme"
         iniSet "soundfont" "$biosdir/scummvm/extra/Roland_SC-55.sf2"
@@ -63,24 +64,75 @@ function configure_lr-scummvm() {
         iniSet "subtitles" "true"
         iniSet "multi_midi" "true"
         iniSet "gm_device" "fluidsynth"
-        chown $user:$user "$biosdir/scummvm.ini"
+        chown $user:$user "$scummvm_ini"
     fi
 
     # enable speed hack core option if running in arm platform
     isPlatform "arm" && setRetroArchCoreOption "scummvm_speed_hack" "enabled"
 
+    # copy python helper only if not present or if there is a more recent dated version
+    rsync -a "$scriptdir/scriptmodules/supplementary/scummvm/scummvm_helper.py" "$romdir/scummvm/"
+    chmod a+x "$romdir/scummvm/scummvm_helper.py"
+
     # create retroarch launcher for lr-scummvm with support for rom directories
     # containing svm files inside (for direct game directory launching in ES)
     cat > "$md_inst/romdir-launcher.sh" << _EOF_
 #!/usr/bin/env bash
-ROM=\$1; shift
-SVM_FILES=()
-[[ -d \$ROM ]] && mapfile -t SVM_FILES < <(compgen -G "\$ROM/*.svm")
-[[ \${#SVM_FILES[@]} -eq 1 ]] && ROM=\${SVM_FILES[0]}
+
+# contains absolute path to file
+ROM="\$1" ; shift
+scummvm_ini="$scummvm_ini"
+
+# \$ROM is a *.svm file in ~/RetroPie/roms/scummvm
+game_id=\$(cat "\$ROM" | xargs)
+fn=\$(basename "\$ROM")
+folder="\${fn%.*}"
+path=\$(dirname "\$ROM")
+
+if [[ -n "\$game_id" ]] ; then
+    # remap to *.scummvm in game subfolder for libretro
+    # libretro ScummVM expects *.scummvm file within game dir
+    ROM="\$path/\$folder/\${folder}.scummvm"
+    if [[ ! -e "\$ROM" ]] ; then
+        # create symbolic link *.scummvm -> ../*.svm
+        pushd "\$path/\$folder" > /dev/null
+        ln -s "../\$fn" "\${folder}.scummvm"
+        popd > /dev/null
+    fi
+    # check if [game_id] exists in libretro's scummvm.ini
+    # LR scummvm.ini is usually at "$scummvm_ini"
+    ini_config_lr=\$("\$path/scummvm_helper.py" checkentry \$game_id --ini libretro)
+    if [[ "\$ini_config_lr" == "absent" ]] ; then
+        # not present in libretro's scummvm.ini
+        # 'copyentry' exits if there is no game_id in the source scummvm.ini
+        "\$path/scummvm_helper.py" copyentry \$game_id
+    fi
+else
+    # force failsafe to autodetect in libretro as there is no ScummVM config to use
+    # NB: Only files with suffix .scummvm will be evaluated by libretro.cpp other
+    # files will trigger autodetect mode. Any game specific changes will not be saved
+    # in libretro's $scummvm_ini
+    ROM="\$path/\$folder/\${folder}.autodetect"
+fi
+
+echo "ROM parameter for libretro: \$ROM" >> /dev/shm/runcommand.log
+
+# keep hash to detect any UI added games
+ini_pre=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
+
 $emudir/retroarch/bin/retroarch \\
     -L "$md_inst/scummvm_libretro.so" \\
     --config "$md_conf_root/scummvm/retroarch.cfg" \\
     "\$ROM" "\$@"
+
+# detecting if game sections added/removed via ScummVM UI
+ini_post=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
+
+if [[ "\${ini_pre}" != "\${ini_post}" ]] ; then
+    # run when returning from ScummVM UI Game 'Add...' or 'Mass add...'
+    "\$path/scummvm_helper.py" uniq _all_ --ini libretro
+    "\$path/scummvm_helper.py" createsvm
+fi
 _EOF_
     chmod +x "$md_inst/romdir-launcher.sh"
 }

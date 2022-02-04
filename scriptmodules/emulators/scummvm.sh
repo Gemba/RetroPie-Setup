@@ -11,7 +11,7 @@
 
 rp_module_id="scummvm"
 rp_module_desc="ScummVM"
-rp_module_help="Copy your ScummVM games to $romdir/scummvm"
+rp_module_help="Copy your ScummVM games to $romdir/scummvm.\nSee https://retropie.org.uk/docs/ScummVM/#example\nfor expected folders and files."
 rp_module_licence="GPL3 https://raw.githubusercontent.com/scummvm/scummvm/master/COPYING"
 rp_module_repo="git https://github.com/scummvm/scummvm.git master a9418f8f"
 rp_module_section="opt"
@@ -72,21 +72,110 @@ function configure_scummvm() {
         moveConfigDir "$home/$dir/scummvm" "$md_conf_root/scummvm"
     done
 
+    # copy python helper
+    cp "$scriptdir/scriptmodules/supplementary/scummvm/scummvm_helper.py" "$romdir/scummvm/"
+    chmod a+x "$romdir/scummvm/scummvm_helper.py"
+
     # Create startup script
     rm -f "$romdir/scummvm/+Launch GUI.sh"
     local name="ScummVM"
     [[ "$md_id" == "scummvm-sdl1" ]] && name="ScummVM-SDL1"
     cat > "$romdir/scummvm/+Start $name.sh" << _EOF_
-#!/bin/bash
-game="\$1"
-pushd "$romdir/scummvm" >/dev/null
-$md_inst/bin/scummvm --fullscreen --joystick=0 --extrapath="$md_inst/extra" "\$game"
-while read id desc; do
-    echo "\$desc" > "$romdir/scummvm/\$id.svm"
-done < <($md_inst/bin/scummvm --list-targets | tail -n +3)
+#! /usr/bin/env bash
+
+# input from runcommand %BASENAME%
+base_name="\$1"
+# <base_name>.svm and <base_name>/ folder expected to be siblings on filesystem
+
+emu_home="$md_inst"
+scummvm_bin="\$emu_home/bin/scummvm"
+rom_home="$romdir/scummvm"
+scummvm_ini="\$HOME/.config/scummvm/scummvm.ini"
+
+pushd "\$rom_home" >/dev/null
+
+params=(
+  --fullscreen
+  --joystick=0
+  --extrapath="\$emu_home/extra"
+)
+# enable for verbose log
+#params+=(--debuglevel=3)
+
+if [[ -n "\$base_name" ]] ; then
+    # launch was via *.svm file, append extension and read file content
+    game_id=\$(cat "\$rom_home/\${base_name}.svm" | xargs)
+
+    # expect game id in *.svm file
+    # check if game id is present in *.svm file (maybe absent on first start)
+    if [[ -z "\$game_id" ]] ; then
+        # absent, try detection
+        # scrape --detect output: it returns game id without engine
+        game_id=\$("\$scummvm_bin" --detect --path="\$base_name" | grep -A 2 "GameID" | tail +3 | cut -f 1 -d ' ' | cut -f 2 -d ':')
+        if [[ -z "\$game_id" ]] ; then
+            # if game_id is empty at this point, then detection was not successful
+            cat << EOF
+FATAL: Detecting game in directory "\$base_name" failed. Game will not start.
+Maybe a required game file is missing? Check https://wiki.scummvm.org for this
+game. Else try running this command to identify any other possible cause:
+    \$scummvm_bin --detect --path="\$rom_home/\$base_name" --debuglevel=3
+EOF
+            exit 1
+        else
+            # add game id to ~/.config/scummvm/scummvm.ini for customisation
+            "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
+            # make sure any added game id variant (i.e. with dashed suffix) is
+            # mapped to [<game_id>]
+            "\$rom_home/scummvm_helper.py" uniq "\$game_id"
+            echo "\$game_id" > "\$rom_home/\${base_name}.svm"
+        fi
+    else
+        # some sanity checks if user has manually added a wrong value to *.svm file
+        found_in_scummvm_ini=\$("\$rom_home/scummvm_helper.py" checkentry "\$game_id")
+        if [[ "absent" == "\$found_in_scummvm_ini" ]] ; then
+            # add to ~/.config/scummvm/scummvm.ini for customisation
+            "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
+            # make sure any added game id variant (i.e. with dashed suffix) is
+            # mapped to [<game_id>] and any dash in the *.svm value is cut off.
+            tgt=\$(echo "\$game_id" | cut -f 1 -d '-')
+            "\$rom_home/scummvm_helper.py" uniq "\$tgt"
+            if [[ \$? -ne 0 ]] ; then
+                # most likely an invalid gameid given in *.svm
+                params+=(--path="\$base_name")
+                cat << EOF
+WARNING: Game id [\$game_id] has no corresponding section in
+    \$scummvm_ini
+Please empty contents of \${base_name}.svm and restart game to fix.
+If the game can be started now, the game config is not saved.
+EOF
+            else
+                # write corrected game id if the previous had a dash
+                echo "\$tgt" > "\$rom_home/\$base_name.svm"
+                game_id="\$tgt"
+            fi
+        fi
+    fi
+else
+    # force directly detour into UI (to add game / mass add in UI), most likely at initial start of ScummVM.
+    game_id=""
+fi
+
+ini_pre=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
+
+"\$scummvm_bin" "\${params[@]}" "\$game_id"
+
+# detecting if game sections added/removed via ScummVM UI
+ini_post=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
+
+if [[ "\${ini_pre}" != "\${ini_post}" ]] ; then
+    # run when returning from ScummVM UI Game add... or Mass add...
+    "\$rom_home/scummvm_helper.py" uniq _all_
+    "\$rom_home/scummvm_helper.py" createsvm
+fi
+
 popd >/dev/null
 _EOF_
-    chown $user:$user "$romdir/scummvm/+Start $name.sh"
+    chown "$user":"$user" "$romdir/scummvm/+Start $name.sh"
     chmod u+x "$romdir/scummvm/+Start $name.sh"
 
     addEmulator 1 "$md_id" "scummvm" "bash $romdir/scummvm/+Start\ $name.sh %BASENAME%"
