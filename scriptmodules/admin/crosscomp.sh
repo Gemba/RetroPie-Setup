@@ -62,6 +62,17 @@ function sources_crosscomp() {
                 [mpc]=1.2.0
             )
             ;;
+        bookworm)
+            pkgs=(
+                [binutils]=2.40
+                [gcc]=12.2.0
+                [glibc]=2.36
+                [gmp]=6.2.1
+                [kernel]=6.1
+                [mpfr]=4.2.0
+                [mpc]=1.3.1
+            )
+            ;;
         *)
             md_ret_errors+=("Unsupported distribution $dist")
             return 1
@@ -86,10 +97,14 @@ function sources_crosscomp() {
 
     # apply glibc patch required when compiling with GCC 10+
     # see https://sourceware.org/git/gitweb.cgi?p=glibc.git;h=49348beafe9ba150c9bd48595b3f372299bddbb0
-    # as well as a fix for an incorrect header include.
     if [[ "$dist" == "bullseye" ]]; then
         applyPatch "$md_data/bullseye.diff"
     fi
+    # fix incorrect limits.h include.
+    if compareVersions "${pkgs[gcc]}" ge 10; then
+        applyPatch "$md_data/asan_limits.diff"
+    fi
+
 }
 
 function build_crosscomp() {
@@ -181,7 +196,6 @@ function setup_crosscomp() {
     if rp_callModule crosscomp sources "$dist"; then
         rp_callModule crosscomp build "$dist"
         rp_callModule crosscomp clean
-        rp_callModule crosscomp switch_distcc "$dist"
     fi
 }
 
@@ -192,25 +206,43 @@ function setup_all_crosscomp() {
     done
 }
 
-function switch_distcc_crosscomp() {
+function configure_distcc_crosscomp() {
     local dist="$1"
     [[ -z "$dist" ]] && return 1
 
-    bins="$md_inst/bin"
-    mkdir -p "$bins"
+    local port="$2"
+    [[ -z "$port" ]] && return 1
 
-    # symlink the gcc/g++ binaries that match the distro we are cross compiling for
+    local bin_dir="$md_inst/$dist/bin"
+
+    # add additional symlinks for cc/gcc/c++/g++
     local name
-    for name in cc gcc arm-linux-gnueabihf-gcc; do
-        ln -sfv "$md_inst/$dist/bin/arm-linux-gnueabihf-gcc" "$bins/$name"
+    for name in cc gcc; do
+        ln -sfv "arm-linux-gnueabihf-gcc" "$bin_dir/$name"
     done
 
-    for name in c++ g++ arm-linux-gnueabihf-g++; do
-        ln -sfv "$md_inst/$dist/bin/arm-linux-gnueabihf-g++" "$bins/$name"
+    for name in c++ g++; do
+        ln -sfv "arm-linux-gnueabihf-g++" "$bin_dir/$name"
     done
 
-    # make sure the path added to the distcc init.d script
-    sed -i "s#^PATH=.*#PATH=$bins:/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin#" /etc/init.d/distcc
+    local initd_script="/etc/init.d/distcc-$dist"
+
+    # duplicate distcc init.d script
+    cp /etc/init.d/distcc "$initd_script"
+
+    # add dist to NAME in new init.d
+    sed -i "s/NAME=distccd/NAME=distccd-$dist/" "$initd_script"
+
+    # add custom port to new init.d
+    sed -i "s/--daemon\"/--daemon --port $port\"/" "$initd_script"
+
+    # add the $dist cross compiler bin path to new init.d
+    sed -i "s#^PATH=.*#PATH=$bin_dir:/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin#" "$initd_script"
+
+    # create log file
+    local log="/var/log/distccd-$dist.log"
+    touch "$log"
+    chown distccd:nogroup "$log"
 
     # restart distcc
     systemctl daemon-reload

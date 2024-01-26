@@ -18,8 +18,11 @@ function apt_upgrade_raspbiantools() {
     # install an older kernel/firmware for stretch to resolve newer kernel issues or unhold if updating to a newer release
     stretch_fix_raspbiantools
 
+    # on Buster, always install the Bluez package from the RPI repos
+    buster_bluez_pin_raspbiantools
+
     aptUpdate
-    apt-get -y dist-upgrade
+    apt-get -y dist-upgrade --allow-downgrades
 }
 
 function lxde_raspbiantools() {
@@ -34,8 +37,14 @@ function lxde_raspbiantools() {
        aptInstall lxplug-volume
     fi
 
+    # Firefox is supported starting with Bookworm, install it along with Chromium
+    [[ "$__os_debian_ver" -ge 12 ]] && aptInstall --no-install-recommends firefox rpi-firefox-mods
+
     setConfigRoot "ports"
     addPort "lxde" "lxde" "Desktop" "XINIT:startx"
+    if (isPlatform "rpi4" || isPlatform "rpi5")  && [[ "$__os_debian_ver" -ge 12 ]]; then
+        addPort "wayfire" "wayfire" "Desktop (Wayland)" "wayfire-pi"
+    fi
     enable_autostart
 }
 
@@ -64,6 +73,19 @@ function stretch_fix_raspbiantools() {
             # we want to unhold it to allow kernel updates again
             install_firmware_raspbiantools "$ver" unhold
         fi
+    fi
+}
+
+function buster_bluez_pin_raspbiantools() {
+    # pin the 'bluez' package to the RPI repos to prevent any Debian updates overwriting it
+    # use Priority 1001 to force the the installation even when the Debian package is installed
+    local pin_file="/etc/apt/preferences.d/01-bluez-pin"
+    if isPlatform "rpi" && [[ "$__os_debian_ver" -eq 10 && ! -f "$pin_file" ]] ; then
+        cat << PIN_EOF > "$pin_file"
+Package: bluez
+Pin: origin archive.raspberrypi.org
+Pin-Priority: 1001
+PIN_EOF
     fi
 }
 
@@ -125,8 +147,38 @@ function enable_modules_raspbiantools() {
     done
 }
 
+function enable_zram_raspbiantools() {
+    if [[ "$__os_id" == "Raspbian" ]] || [[ "$__os_id" == "Debian" ]]; then
+        aptInstall zram-tools
+        # Use 50% of the current memory for ZRAM
+        local percent="50"
+        iniConfig "=" "" "/etc/default/zramswap"
+        # Raspbian Buster uses keyword PERCENTAGE
+        iniSet "PERCENTAGE" "$percent"
+        # Debian Bullseye/Bookworm use keyword PERCENT
+        iniSet "PERCENT" "$percent"
+        # Use zstd compression algorithm if kernel supports it
+        [[ -f /sys/class/block/zram0/comp_algorithm ]] && [[ "$(cat /sys/class/block/zram0/comp_algorithm)" == *zstd* ]] && iniSet "ALGO" "zstd"
+        service zramswap stop
+        service zramswap start
+    elif [[ "$__os_id" == "Ubuntu" ]]; then
+        aptInstall zram-config
+        # Ubuntu has a automatic zram configuration
+    fi
+}
+
+function disable_zram_raspbiantools() {
+    if [[ "$__os_id" == "Raspbian" ]] || [[ "$__os_id" == "Debian" ]]; then
+        aptRemove zram-tools
+    elif [[ "$__os_id" == "Ubuntu" ]]; then
+        aptRemove zram-config
+    fi
+}
+
 function gui_raspbiantools() {
     while true; do
+        local zram_status="Enable"
+        [[ $(cat /proc/swaps) == *zram* ]] && zram_status="Disable"
         local cmd=(dialog --backtitle "$__backtitle" --menu "Choose an option" 22 76 16)
         local options=(
             1 "Upgrade Raspbian packages"
@@ -135,6 +187,9 @@ function gui_raspbiantools() {
             4 "Disable screen blanker"
             5 "Enable needed kernel module uinput"
         )
+        # exclude ZRAM config for Armbian, it is handled by `armbian-config`
+        ! isPlatform "armbian" && options+=(6 "$zram_status compressed memory (ZRAM)")
+
         local choice=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
         if [[ -n "$choice" ]]; then
             case "$choice" in
@@ -154,6 +209,9 @@ function gui_raspbiantools() {
                     ;;
                 5)
                     rp_callModule "$md_id" enable_modules
+                    ;;
+                6)
+                    [[ "$zram_status" == "Enable" ]] && rp_callModule "$md_id" enable_zram || rp_callModule "$md_id" disable_zram
                     ;;
             esac
         else

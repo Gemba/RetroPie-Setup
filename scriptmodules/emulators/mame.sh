@@ -22,7 +22,7 @@ function _get_branch_mame() {
 }
 
 function depends_mame() {
-    if compareVersions $__gcc_version lt 7; then
+    if [[ "$__gcc_version" -lt 7 ]]; then
         md_ret_errors+=("Sorry, you need an OS with gcc 7 or newer to compile $md_id")
         return 1
     fi
@@ -34,6 +34,8 @@ function depends_mame() {
 
 function sources_mame() {
     gitPullOrClone
+    # lzma assumes hardware crc support on arm which breaks when building on armv7
+    isPlatform "armv7" && applyPatch "$md_data/lzma_armv7_crc.diff"
 }
 
 function build_mame() {
@@ -44,9 +46,17 @@ function build_mame() {
         rpSwap on 4096
     fi
 
-    # Compile MAME
     local params=(NOWERROR=1 ARCHOPTS=-U_FORTIFY_SOURCE PYTHON_EXECUTABLE=python3)
-    QT_SELECT=5 make "${params[@]}"
+    # when building on ARM enable 'fsigned-char' for compiled code, fixes crashes in a few drivers
+    isPlatform "arm" || isPlatform "aarch64" && params+=(ARCHOPTS_CXX=-fsigned-char)
+
+    # workaround for linker crash on bullseye (use gold linker)
+    if [[ "$__os_debian_ver" -eq 11 ]] && isPlatform "arm"; then
+        QT_SELECT=5 LDFLAGS+=" -fuse-ld=gold -Wl,--long-plt" make "${params[@]}"
+    else
+        QT_SELECT=5 make "${params[@]}"
+    fi
+
     strip mame
 
     rpSwap off

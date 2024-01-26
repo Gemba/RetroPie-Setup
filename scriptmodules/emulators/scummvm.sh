@@ -13,7 +13,7 @@ rp_module_id="scummvm"
 rp_module_desc="ScummVM"
 rp_module_help="Copy your ScummVM games to $romdir/scummvm.\nSee https://retropie.org.uk/docs/ScummVM/#example\nfor expected folders and files."
 rp_module_licence="GPL3 https://raw.githubusercontent.com/scummvm/scummvm/master/COPYING"
-rp_module_repo="git https://github.com/scummvm/scummvm.git master a9418f8f"
+rp_module_repo="git https://github.com/scummvm/scummvm.git v2.8.0"
 rp_module_section="opt"
 rp_module_flags="sdl2"
 
@@ -21,7 +21,7 @@ function depends_scummvm() {
     local depends=(
         liba52-0.7.4-dev libmpeg2-4-dev libogg-dev libvorbis-dev libflac-dev libgif-dev libmad0-dev libpng-dev
         libtheora-dev libfaad-dev libfluidsynth-dev libfreetype6-dev zlib1g-dev
-        libjpeg-dev libasound2-dev libcurl4-openssl-dev
+        libjpeg-dev libasound2-dev libcurl4-openssl-dev libmikmod-dev libvpx-dev
     )
     if isPlatform "vero4k"; then
         depends+=(vero3-userland-dev-osmc)
@@ -39,22 +39,29 @@ function sources_scummvm() {
 }
 
 function build_scummvm() {
+    rpSwap on 750
     local params=(
+        --prefix="$md_inst"
         --enable-release --enable-vkeybd
-        --disable-debug --disable-eventrecorder --prefix="$md_inst"
+        --disable-debug --disable-eventrecorder --disable-sonivox
     )
     isPlatform "rpi" && isPlatform "32bit" && params+=(--host=raspberrypi)
-    isPlatform "gles" && params+=(--opengl-mode=gles2)
+    isPlatform "rpi" && [[ "$md_id" == "scummvm-sdl1" ]] && params+=(--opengl-mode=none)
     # stop scummvm using arm-linux-gnueabihf-g++ which is v4.6 on
     # wheezy and doesn't like rpi2 cpu flags
     if isPlatform "rpi"; then
-        CC="gcc" CXX="g++" ./configure "${params[@]}"
+        if [[ "$md_id" == "scummvm-sdl1" ]]; then
+            SDL_CONFIG=sdl-config CC="gcc" CXX="g++" ./configure "${params[@]}"
+        else
+            CC="gcc" CXX="g++" ./configure "${params[@]}"
+        fi
     else
         ./configure "${params[@]}"
     fi
     make clean
     make
     strip "$md_build/scummvm"
+    rpSwap off
     md_ret_require="$md_build/scummvm"
 }
 
@@ -97,8 +104,12 @@ pushd "\$rom_home" >/dev/null
 params=(
   --fullscreen
   --joystick=0
-  --extrapath="\$emu_home/extra"
 )
+
+if ! grep -qs extrapath "\$scummvm_ini"; then
+    params+=(--extrapath="\$emu_home/extra")
+fi
+
 # enable for verbose log
 #params+=(--debuglevel=3)
 
