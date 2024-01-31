@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 
-# scummvm_helper.py: Utility to maintain scummvm.ini entries.
+# scummvm_helper.py: Utility to manage scummvm.ini entries.
 # This script is to be used in a RetroPie setup.
 #
 # It is leveraged by the launcher scripts "+Start ScummVM.sh" (scummvm) and
@@ -8,6 +8,12 @@
 #
 # See scummvm_helper.py --help for usage.
 #
+# Note on terminology:
+# 'game id' denotes the game identifier, synonym is target. The game id does
+# usually not contain the engine. However the full game id does contain the
+# engine followed by the target, separated by a colon. For example
+# scumm:tentacle. This format is also referenced as ScummVM ID.
+
 # Copyright (C) 2022 Gemba @ github
 #
 # This program is free software: you can redistribute it and/or modify
@@ -17,17 +23,11 @@
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-# Note on terminology:
-# 'game id' denotes the game identifier, synonym is target. The game id does
-# usually not contain the engine. However the full game id does contain the
-# engine followed by the target, separated by a colon. For example
-# scumm:tentacle. This format id is also referenced as ScummVM ID
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
 import configparser
@@ -235,8 +235,7 @@ def create_svm_files_cmd(args):
                     # usually game id/target as content
                     target = fh.readline().strip()
                 log.debug(
-                    f"... exists: {svm_path.name}, with: '{target}'."
-                    " Skipping."
+                    f"... exists: {svm_path.name}, with: '{target}'. Skipping."
                 )
         else:
             with open(svm_path, "r") as fh:
@@ -273,9 +272,9 @@ def unique_target_cmd(args):
 
     # copy [scummvm] config
     _cp_section(ini, ini_new, "scummvm")
-    sorted_sections = sorted(ini_new._sections.items(),
-                             key=cmp_to_key(_cmp_scummvm_ini_sections)
-                             )
+    sorted_sections = sorted(
+        ini_new._sections.items(), key=cmp_to_key(_cmp_scummvm_ini_sections)
+    )
     ini_new._sections = OrderedDict(sorted_sections)
 
     with open(cfg_file, "w") as fh:
@@ -283,9 +282,11 @@ def unique_target_cmd(args):
 
 
 def uniq_all_targets(ini, ini_new, game_id, targets):
+    """Assure to have only one [game_id] per each game."""
     # find all targets with dashes, keep only game id without dash
-    plain_game_ids = set([s.split("-")[0]
-                          for s in ini.sections() if "-" in s])
+    plain_game_ids = set(
+        [s.split("-")[0] for s in ini.sections() if "-" in s]
+    )
     for game_id in plain_game_ids:
         # keep only relevant game sections:
         # matches section with exact same name as game_id or
@@ -295,17 +296,22 @@ def uniq_all_targets(ini, ini_new, game_id, targets):
         source_sect = default_variant(game_sections)
         _cp_section(ini, ini_new, game_id, source_sect)
         log.debug(
-            f"Source ini section [{source_sect}] changed to [{game_id}].")
+            f"Source ini section [{source_sect}] changed to [{game_id}]."
+        )
 
     # copy other sections without dashes
-    [_cp_section(ini, ini_new, sect)
-     for sect in [s for s in targets if "-" not in s]]
+    [
+        _cp_section(ini, ini_new, sect)
+        for sect in [s for s in targets if "-" not in s]
+    ]
 
 
 def uniq_target(ini, ini_new, game_id, targets, cfg_file):
+    """Assure that only one [game_id] is present for a game."""
     if "-" in game_id:
         log.error(
-            f"Game short name '{game_id}' may not contain dashes. Exiting.")
+            f"Game short name '{game_id}' may not contain dashes. Exiting."
+        )
         sys.exit(-2)
 
     re_sect = rf"^{game_id}([-].*)?$"
@@ -323,8 +329,11 @@ def uniq_target(ini, ini_new, game_id, targets, cfg_file):
     _cp_section(ini, ini_new, game_id, source_sect)
     log.debug(f"Source ini section [{source_sect}] changed to [{game_id}].")
     # retain other
-    [_cp_section(ini, ini_new, sect)
-     for sect in targets if not re.search(re_sect, sect)]
+    [
+        _cp_section(ini, ini_new, sect)
+        for sect in targets
+        if not re.search(re_sect, sect)
+    ]
 
 
 def default_variant(game_sections):
@@ -343,6 +352,7 @@ def default_variant(game_sections):
 def _cmp_scummvm_ini_sections(this, that):
     """Compare function for scummvm.ini section names."""
     if this[0] == "scummvm":
+        # keep [scummvm] first
         return -1
     if that[0] == "scummvm":
         return 1
@@ -392,13 +402,15 @@ def copy_section_cmd(args):
 
     if not section_name in game_sections:
         log.warning(
-            f"Source [{section_name}] not present in {from_file}. Exiting.")
+            f"Source [{section_name}] not present in {from_file}. Exiting."
+        )
         sys.exit(-1)
 
     if section_name in to_ini.sections() and not args.force:
         log.warning(
             f"Game ID [{section_name}] already present in {to_file}."
-            " Use --force to update. Exiting.")
+            " Use --force to update. Exiting."
+        )
         sys.exit(-1)
 
     section = from_ini[section_name]
