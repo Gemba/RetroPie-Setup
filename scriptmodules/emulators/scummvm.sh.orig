@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+
+# This file is part of The RetroPie Project
+#
+# The RetroPie Project is the legal property of its developers, whose names are
+# too numerous to list here. Please refer to the COPYRIGHT.md file distributed with this source.
+#
+# See the LICENSE.md file at the top-level directory of this distribution and
+# at https://raw.githubusercontent.com/RetroPie/RetroPie-Setup/master/LICENSE.md
+#
+
+rp_module_id="scummvm"
+rp_module_desc="ScummVM"
+<<<<<<< HEAD
+rp_module_help="Copy your ScummVM games to $romdir/scummvm.\nSee https://retropie.org.uk/docs/ScummVM/#example\nfor expected folders and files."
+rp_module_licence="GPL2 https://raw.githubusercontent.com/scummvm/scummvm/master/COPYING"
+rp_module_repo="git https://github.com/scummvm/scummvm.git v2.5.1"
+=======
+rp_module_help="Copy your ScummVM games to $romdir/scummvm"
+rp_module_licence="GPL3 https://raw.githubusercontent.com/scummvm/scummvm/master/COPYING"
+rp_module_repo="git https://github.com/scummvm/scummvm.git master a9418f8f"
+>>>>>>> 84a17e0c... scummvm: update to fix GL runtime detection
+rp_module_section="opt"
+rp_module_flags="sdl2"
+
+function depends_scummvm() {
+    local depends=(
+        libmpeg2-4-dev libogg-dev libvorbis-dev libflac-dev libmad0-dev libpng-dev
+        libtheora-dev libfaad-dev libfluidsynth-dev libfreetype6-dev zlib1g-dev
+        libjpeg-dev libasound2-dev libcurl4-openssl-dev
+    )
+    if isPlatform "vero4k"; then
+        depends+=(vero3-userland-dev-osmc)
+    fi
+    if [[ "$md_id" == "scummvm-sdl1" ]]; then
+        depends+=(libsdl1.2-dev)
+    else
+        depends+=(libsdl2-dev)
+    fi
+    getDepends "${depends[@]}"
+}
+
+function sources_scummvm() {
+    gitPullOrClone
+}
+
+function build_scummvm() {
+    local params=(
+        --enable-release --enable-vkeybd
+        --disable-debug --disable-eventrecorder --prefix="$md_inst"
+    )
+    isPlatform "rpi" && isPlatform "32bit" && params+=(--host=raspberrypi)
+    isPlatform "gles" && params+=(--opengl-mode=gles2)
+    # stop scummvm using arm-linux-gnueabihf-g++ which is v4.6 on
+    # wheezy and doesn't like rpi2 cpu flags
+    if isPlatform "rpi"; then
+        CC="gcc" CXX="g++" ./configure "${params[@]}"
+    else
+        ./configure "${params[@]}"
+    fi
+    make clean
+    make
+    strip "$md_build/scummvm"
+    md_ret_require="$md_build/scummvm"
+}
+
+function install_scummvm() {
+    make install
+    mkdir -p "$md_inst/extra"
+    cp -v backends/vkeybd/packs/vkeybd_*.zip "$md_inst/extra"
+}
+
+function configure_scummvm() {
+    mkRomDir "scummvm"
+
+    local dir
+    for dir in .config .local/share; do
+        moveConfigDir "$home/$dir/scummvm" "$md_conf_root/scummvm"
+    done
+
+    # copy python helper
+    cp "$scriptdir/scriptmodules/supplementary/scummvm/scummvm_helper.py" "$romdir/scummvm/"
+    chmod a+x "$romdir/scummvm/scummvm_helper.py"
+
+    # Create startup script
+    rm -f "$romdir/scummvm/+Launch GUI.sh"
+    local name="ScummVM"
+    [[ "$md_id" == "scummvm-sdl1" ]] && name="ScummVM-SDL1"
+    cat > "$romdir/scummvm/+Start $name.sh" << _EOF_
+#! /bin/bash
+
+base_name="\$1"
+# <base_name>.svm and <base_name>/ folder expected to be siblings on filesystem
+
+emu_home="$md_inst"
+scummvm_bin="\$emu_home/bin/scummvm"
+rom_home="$romdir/scummvm"
+scummvm_ini="\$HOME/.config/scummvm/scummvm.ini"
+
+pushd "\$rom_home" >/dev/null
+
+params=(
+  --fullscreen
+  --joystick=0
+  --extrapath="\$emu_home/extra"
+)
+# enable for verbose log
+#params+=(--debuglevel=3)
+
+if [[ ! -z "\$base_name" ]] ; then
+    # <game_short name> maps to section [<game_short_name>] in scummvm.ini
+    game_short_name=\$(cat "\$rom_home/\$base_name.svm" | xargs)
+
+    # check if game short name is present in *.svm file (maybe absent on first start)
+    if [[ -z "\$game_short_name" ]] ; then
+        # absent, try detection
+        # --detect returns game short name without dashes
+        game_short_name=\$("\$scummvm_bin" --detect --path="\$base_name" | grep -A 2 "GameID" | tail +3 | cut -f 1 -d ' ' | cut -f 2 -d ':')
+        if [[ -z "\$game_short_name" ]] ; then
+            # if game_short_name is empty at this point, then detection was not successful
+            echo "FATAL: Detecting game in base_name '\$base_name' failed. Game will not start." >> /dev/shm/runcommand.log
+            echo "       Maybe a required game file is missing? Check https://wiki.scummvm.org for this game." >> /dev/shm/runcommand.log
+            echo "       Try running" >> /dev/shm/runcommand.log
+            echo "           \"\$scummvm_bin\" --detect --path=\"\$rom_home/\$base_name\" --debuglevel=3" >> /dev/shm/runcommand.log
+            echo "       interactively to examine." >> /dev/shm/runcommand.log
+            exit 1
+        else
+            # add to ~/.config/scummvm/scummvm.ini for customisation
+            "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
+            # make sure any added game short name variant (i.e. with dashed suffix) is
+            # mapped to [<game_short_name>]
+            "\$rom_home/scummvm_helper.py" uniq "\$game_short_name"
+            echo "\$game_short_name" > "\$rom_home/\$base_name.svm"
+        fi
+    else
+        # some sanity checks if user has manually added a wrong value to *.svm file
+        found_in_scummvm_ini=\$("\$rom_home/scummvm_helper.py" checkentry "\$game_short_name")
+        if [[ "absent" == "\$found_in_scummvm_ini" ]] ; then
+            # add to ~/.config/scummvm/scummvm.ini for customisation
+            "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
+            # make sure any added game short name variant (i.e. with dashed suffix) is
+            # mapped to [<game_short_name>] and any dash in the *.svm value is cut off.
+            gsn=\$(echo "\$game_short_name" | cut -f 1 -d '-')
+            "\$rom_home/scummvm_helper.py" uniq "\$gsn"
+            if [[ \$? -ne 0 ]] ; then
+                # most likely an invalid gameid given in *.svm
+                params+=(--path="\$base_name")
+                echo "WARNING: Game ID [\$game_short_name] has no corresponding section in scummvm.ini, please empty value in \${base_name}.svm and restart game to fix. If game can be started now, game config changes are not saved." >> /dev/shm/runcommand.log
+            else
+                # write corrected game short name if the previous had a dash
+                echo "\$gsn" > "\$rom_home/\$base_name.svm"
+                game_short_name="\$gsn"
+            fi
+        fi
+    fi
+else
+    # force directly detour into UI (to add game / mass add in UI), most likely initial start
+    game_short_name=""
+fi
+
+ini_pre=\$(grep "\[" "\$scummvm_ini" | wc -c)
+
+"\$scummvm_bin" "\${params[@]}" "\$game_short_name"
+
+# detecting if game sections added/removed via ScummVM UI
+ini_post=\$(grep "\[" "\$scummvm_ini" | wc -c)
+diff_lines=\$((ini_pre-ini_post))
+
+if [[ -z "\$game_short_name" ]] || [[ \${diff_lines} -ne 0 ]] ; then
+    # run when returning from ScummVM UI
+    "\$rom_home/scummvm_helper.py" uniq _all_
+    "\$rom_home/scummvm_helper.py" createsvm >> /dev/shm/runcommand.log
+fi
+
+popd >/dev/null
+_EOF_
+    chown $user:$user "$romdir/scummvm/+Start $name.sh"
+    chmod u+x "$romdir/scummvm/+Start $name.sh"
+
+    addEmulator 1 "$md_id" "scummvm" "bash $romdir/scummvm/+Start\ $name.sh %BASENAME%"
+    addSystem "scummvm"
+}

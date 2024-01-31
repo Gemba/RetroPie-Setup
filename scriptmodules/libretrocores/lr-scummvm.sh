@@ -85,10 +85,11 @@ ROM="\$1" ; shift
 scummvm_ini="$scummvm_ini"
 
 # \$ROM is a *.svm file in ~/RetroPie/roms/scummvm
-game_id=\$(cat "\$ROM" | xargs)
+game_id=\$(xargs < "\$ROM")
 fn=\$(basename "\$ROM")
 folder="\${fn%.*}"
 path=\$(dirname "\$ROM")
+scummvm_helper="python3 \"\$path/scummvm_helper.py\""
 
 if [[ -n "\$game_id" ]] ; then
     # remap to *.scummvm in game subfolder for libretro
@@ -97,16 +98,19 @@ if [[ -n "\$game_id" ]] ; then
     if [[ ! -e "\$ROM" ]] ; then
         # create symbolic link *.scummvm -> ../*.svm
         pushd "\$path/\$folder" > /dev/null
-        ln -s "../\$fn" "\${folder}.scummvm"
+        if ! ln -s "../\$fn" "\${folder}.scummvm" ; then
+            # filesystem does not allow symlinks (e.g. mounted vFAT volume)
+            cp -f "../\$fn" "\${folder}.scummvm"
+        fi
         popd > /dev/null
     fi
     # check if [game_id] exists in libretro's scummvm.ini
     # LR scummvm.ini is usually at "$scummvm_ini"
-    ini_config_lr=\$("\$path/scummvm_helper.py" checkentry \$game_id --ini libretro)
+    ini_config_lr=\$("\$scummvm_helper" checkentry "\$game_id" --ini libretro)
     if [[ "\$ini_config_lr" == "absent" ]] ; then
         # not present in libretro's scummvm.ini
         # 'copyentry' exits if there is no game_id in the source scummvm.ini
-        "\$path/scummvm_helper.py" copyentry \$game_id
+        "\$scummvm_helper" copyentry "\$game_id"
     fi
 else
     # force failsafe to autodetect in libretro as there is no ScummVM config to use
@@ -131,8 +135,8 @@ ini_post=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
 
 if [[ "\${ini_pre}" != "\${ini_post}" ]] ; then
     # run when returning from ScummVM UI Game 'Add...' or 'Mass add...'
-    "\$path/scummvm_helper.py" uniq _all_ --ini libretro
-    "\$path/scummvm_helper.py" createsvm
+    "\$scummvm_helper" uniq _all_ --ini libretro
+    "\$scummvm_helper" createsvm
 fi
 _EOF_
     chmod +x "$md_inst/romdir-launcher.sh"

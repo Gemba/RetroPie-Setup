@@ -98,6 +98,8 @@ emu_home="$md_inst"
 scummvm_bin="\$emu_home/bin/scummvm"
 rom_home="$romdir/scummvm"
 scummvm_ini="\$HOME/.config/scummvm/scummvm.ini"
+# avoid fail when romfolder is mount -o noexec
+scummvm_helper="python3 \"\$rom_home/scummvm_helper.py\""
 
 pushd "\$rom_home" >/dev/null
 
@@ -115,7 +117,7 @@ fi
 
 if [[ -n "\$base_name" ]] ; then
     # launch was via *.svm file, append extension and read file content
-    game_id=\$(cat "\$rom_home/\${base_name}.svm" | xargs)
+    game_id=\$(xargs < "\$rom_home/\${base_name}.svm")
 
     # expect game id in *.svm file
     # check if game id is present in *.svm file (maybe absent on first start)
@@ -137,20 +139,19 @@ EOF
             "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
             # make sure any added game id variant (i.e. with dashed suffix) is
             # mapped to [<game_id>]
-            "\$rom_home/scummvm_helper.py" uniq "\$game_id"
+            "\$scummvm_helper" uniq "\$game_id"
             echo "\$game_id" > "\$rom_home/\${base_name}.svm"
         fi
     else
         # some sanity checks if user has manually added a wrong value to *.svm file
-        found_in_scummvm_ini=\$("\$rom_home/scummvm_helper.py" checkentry "\$game_id")
+        found_in_scummvm_ini=\$("\$scummvm_helper" checkentry "\$game_id")
         if [[ "absent" == "\$found_in_scummvm_ini" ]] ; then
             # add to ~/.config/scummvm/scummvm.ini for customisation
             "\$scummvm_bin" --add --path="\$base_name" >/dev/null 2>&1
             # make sure any added game id variant (i.e. with dashed suffix) is
             # mapped to [<game_id>] and any dash in the *.svm value is cut off.
             tgt=\$(echo "\$game_id" | cut -f 1 -d '-')
-            "\$rom_home/scummvm_helper.py" uniq "\$tgt"
-            if [[ \$? -ne 0 ]] ; then
+            if ! "\$scummvm_helper" uniq "\$tgt" ; then
                 # most likely an invalid gameid given in *.svm
                 params+=(--path="\$base_name")
                 cat << EOF
@@ -180,8 +181,8 @@ ini_post=\$(grep "\[" "\$scummvm_ini" | sort | sha256sum)
 
 if [[ "\${ini_pre}" != "\${ini_post}" ]] ; then
     # run when returning from ScummVM UI Game add... or Mass add...
-    "\$rom_home/scummvm_helper.py" uniq _all_
-    "\$rom_home/scummvm_helper.py" createsvm
+    "\$scummvm_helper" uniq _all_
+    "\$scummvm_helper" createsvm
 fi
 
 popd >/dev/null
