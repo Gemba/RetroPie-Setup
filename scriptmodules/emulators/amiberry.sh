@@ -13,9 +13,9 @@ rp_module_id="amiberry"
 rp_module_desc="Amiga emulator with JIT support (forked from uae4arm)"
 rp_module_help="ROM Extension: .adf .chd .ipf .lha .zip\n\nCopy your Amiga games to $romdir/amiga\n\nCopy the required BIOS files\nkick13.rom\nkick20.rom\nkick31.rom\nto $biosdir/amiga"
 rp_module_licence="GPL3 https://raw.githubusercontent.com/BlitterStudio/amiberry/master/LICENSE"
-rp_module_repo="git https://github.com/BlitterStudio/amiberry v5.6.6"
+rp_module_repo="git https://github.com/BlitterStudio/amiberry :_get_branch_amiberry"
 rp_module_section="opt"
-rp_module_flags="!all arm rpi3 rpi4 rpi5"
+rp_module_flags="!all arm rpi3 rpi4 rpi5 x86"
 
 function _update_hook_amiberry() {
     local rom
@@ -26,6 +26,16 @@ function _update_hook_amiberry() {
             moveConfigFile "$biosdir/$rom" "$biosdir/amiga/$rom"
         fi
     done
+}
+
+function _get_branch_amiberry() {
+    if isPlatform "dispmanx"; then
+        echo "v5.7.1"
+    elif isPlatform "x86"; then
+        echo "preview-v6.3.3"
+    else
+        echo "v5.7.2"
+    fi
 }
 
 function _get_platform_amiberry() {
@@ -42,6 +52,8 @@ function _get_platform_amiberry() {
         platform="tinker"
     elif isPlatform "vero4k"; then
         platform="vero4k"
+    elif isPlatform "x86"; then
+        platform="x86-64"
     fi
     echo "$platform"
 }
@@ -57,7 +69,14 @@ function depends_amiberry() {
 
 function sources_amiberry() {
     gitPullOrClone
-    applyPatch "$md_data/01_preserve_env.diff"
+    if ! isPlatform "x86"; then
+        applyPatch "$md_data/01_preserve_env.diff"
+    fi
+    # Dispmanx is locked on v5.7.1, apply some critical fixes on top of it
+    if isPlatform "dispmanx"; then
+        applyPatch "$md_data/02_fix_uae_config_load.diff"
+        applyPatch "$md_data/03_fix_crash_saving.diff"
+    fi
     # use our default optimisation level
     sed -i "/CFLAGS += -O3/d" "$md_build/Makefile"
 }
@@ -69,6 +88,7 @@ function build_amiberry() {
     ./configure
     make clean
     make
+    cp "*capsimg.so" "$md_build/plugins"
     cd "$md_build"
     make clean
     make PLATFORM="$platform" CPUFLAGS="$__cpu_flags"
@@ -80,7 +100,7 @@ function install_amiberry() {
         'abr'
         'amiberry'
         'data'
-        'external/capsimg/capsimg.so'
+        'plugins'
         'kickstarts'
     )
 
@@ -109,6 +129,15 @@ function configure_amiberry() {
     for dir in conf nvram savestates screenshots; do
         moveConfigDir "$md_inst/$dir" "$md_conf_root/amiga/amiberry/$dir"
     done
+
+    # set various media paths to the 'amiga' rom folder
+    if [ -f "$md_inst/conf/amiberry.conf" ]; then
+        iniConfig "=" "" "$md_inst/conf/amiberry.conf"
+        iniSet "floppy_path" "$romdir/amiga"
+        iniSet "harddrive_path" "$romdir/amiga"
+        iniSet "cdrom_path" "$romdir/amiga"
+        iniSet "lha_path" "$romdir/amiga"
+    fi
 
     # check for cd32.nvr and move it to $md_conf_root/amiga/amiberry/nvram
     if [[ -f "$md_conf_root/amiga/amiberry/cd32.nvr" ]]; then
