@@ -114,6 +114,9 @@ function install_rp_image() {
     echo "retropie" >"$chroot/etc/hostname"
     sed -i "s/raspberrypi/retropie/" "$chroot/etc/hosts"
 
+    # https://github.com/RPi-Distro/repo/issues/382
+    echo "MODULES=most" >"$chroot/etc/initramfs-tools/conf.d/local.conf"
+
     # quieter boot / disable plymouth (as without the splash parameter it
     # causes all boot messages to be displayed and interferes with people
     # using tty3 to make the boot even quieter)
@@ -133,8 +136,10 @@ function install_rp_image() {
     fi
     iniSet "overscan_scale" 1
 
-    # disable 64bit kernel
-    iniSet "arm_64bit" 0
+    # set 64bit kernel flag
+    local use64bit=0
+    grep -q _arm64_ "$scriptdir/scriptmodules/admin/image/dists/$dist.ini" && use64bit=1
+    [[ "platform" != "rpi5" ]] && iniSet "arm_64bit" $use64bit
 
     [[ -z "$__chroot_branch" ]] && __chroot_branch="master"
     cat > "$chroot/home/pi/install.sh" <<_EOF_
@@ -147,7 +152,7 @@ if systemctl is-enabled userconfig &>/dev/null; then
 fi
 sudo apt-get update
 sudo apt-get -y install git dialog xmlstarlet joystick
-git clone -b "$__chroot_branch" https://github.com/RetroPie/RetroPie-Setup.git
+git clone --depth 1 -b "$__chroot_branch" https://github.com/RetroPie/RetroPie-Setup.git
 cd RetroPie-Setup
 modules=(
     'raspbiantools apt_upgrade'
@@ -178,6 +183,7 @@ _EOF_
 
     # remove any ssh host keys that may have been generated during any ssh package upgrades
     rm -f "$chroot/etc/ssh/ssh_host"*
+    rm -f "$chroot/etc/initramfs-tools/conf.d/local.conf"
 }
 
 function _init_chroot_image() {
@@ -201,7 +207,7 @@ function _init_chroot_image() {
     echo "nameserver $nameserver" >"$chroot/etc/resolv.conf"
 
     # move /etc/ld.so.preload out of the way to avoid warnings
-    mv "$chroot/etc/ld.so.preload" "$chroot/etc/ld.so.preload.bak"
+    [[ -f "$chroot/etc/ld.so.preload" ]] && mv "$chroot/etc/ld.so.preload" "$chroot/etc/ld.so.preload.bak"
 }
 
 function _deinit_chroot_image() {
@@ -215,7 +221,7 @@ function _deinit_chroot_image() {
     isPlatform "x86" && rm -f "$chroot/usr/bin/qemu-arm-static"
 
     # restore /etc/ld.so.preload
-    mv "$chroot/etc/ld.so.preload.bak" "$chroot/etc/ld.so.preload"
+    [[ -f "$chroot/etc/ld.so.preload" ]] && mv "$chroot/etc/ld.so.preload.bak" "$chroot/etc/ld.so.preload"
 
     umount -l "$chroot/proc" "$chroot/dev/pts"
     trap INT
@@ -287,7 +293,9 @@ function create_image() {
     printMsgs "console" "Mounting $image_name ..."
     local tmp="$(mktemp -d -p "$md_build")"
     mount "$part_root" "$tmp"
-    mkdir -p "$tmp/boot"
+    local fw_folder=""
+    [[ $(cat /etc/issue.net | cut -f 3 -d ' ') -ge 12 ]] && fw_folder="/firmware"
+    mkdir -p "$tmp/boot$fw_folder"
     mount "$part_boot" "$tmp/boot"
 
     # copy files
