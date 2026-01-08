@@ -16,7 +16,14 @@ rp_module_flags=""
 
 function depends_image() {
     local depends=(kpartx unzip binfmt-support rsync parted squashfs-tools dosfstools e2fsprogs xz-utils)
-    isPlatform "x86" && depends+=(qemu-user-binfmt)
+    if isPlatform "x86"; then
+        if [[ "$__os_debian_ver" -ge 13 ]] ; then
+            depends+=(qemu-user-binfmt)
+            apt remove -y qemu-user-static
+        else
+            depends+=(qemu-user-static)
+        fi
+    fi
     getDepends "${depends[@]}"
 
     # enable C flag in qemu-aarch64/qemu-arm binfmt_misc override to allow suid binaries in emulated chroot
@@ -26,7 +33,7 @@ function depends_image() {
             local config="qemu-$platform.conf"
             local src_config="/usr/lib/binfmt.d/$config"
             local dest_config="/etc/binfmt.d/$config"
-            if [[ ! -f "$dest_config" ]]; then
+            if [[ ! -f "$dest_config" ]] && [[ "$__os_debian_ver" -ge 13 ]]; then
                 printMsgs "console" "Adding C flag to $src_config (overriding in $dest_config)"
                 sed "s/$/C/" "/usr/lib/binfmt.d/$config" >"/etc/binfmt.d/$config"
             fi
@@ -150,19 +157,25 @@ function install_rp_image() {
     echo "retropie" >"$chroot/etc/hostname"
     sed -i "s/raspberrypi/retropie/" "$chroot/etc/hosts"
 
+    # https://github.com/RPi-Distro/repo/issues/382
+    echo "MODULES=most" >"$chroot/etc/initramfs-tools/conf.d/local.conf"
+
     local boot_path="$(_get_boot_path_image "$chroot")"
+
+    # enable SSH
+    touch "${chroot}${boot_path}/ssh.txt"
 
     # quieter boot / disable plymouth (as without the splash parameter it
     # causes all boot messages to be displayed and interferes with people
     # using tty3 to make the boot even quieter)
-    if ! grep -q consoleblank "$chroot$boot_path/cmdline.txt"; then
+    if ! grep -q consoleblank "${chroot}${boot_path}/cmdline.txt"; then
         # extra quiet as the raspbian usr/lib/raspi-config/init_resize.sh does
         # sed -i 's/ quiet init=.*$//' /boot/cmdline.txt so this will remove the last quiet
         # and the init line but leave ours intact
-        sed -i "s/quiet/quiet loglevel=3 consoleblank=0 plymouth.enable=0 quiet/" "$chroot/boot/cmdline.txt"
+        sed -i "s/quiet/quiet loglevel=3 consoleblank=0 plymouth.enable=0 quiet/" "${chroot}${boot_path}/cmdline.txt"
     fi
 
-    iniConfig "=" "" "$chroot$boot_path/config.txt"
+    iniConfig "=" "" "${chroot}${boot_path}/config.txt"
     # set default GPU mem (videocore only)
     if [[ "$dist_version" -lt 11 && "$platform" == rpi[123] ]]; then
         iniSet "gpu_mem_256" 128
@@ -176,9 +189,9 @@ function install_rp_image() {
     # 64 bit distros end in -64
     if [[ "$dist" != *-64 ]]; then
         iniSet "arm_64bit" 0
-    # otherwise if on 64bit switch to using the 4k page size kernel
     else
-        iniSet "kernel" "kernel8.img"
+        # otherwise if on 64bit switch to using the 4k page size kernel
+        [[ "$platform" != "rpi5" ]] && iniSet "arm_64bit" 1
     fi
 
     [[ -z "$__chroot_repo" ]] && __chroot_repo="https://github.com/RetroPie/RetroPie-Setup.git"
@@ -189,11 +202,14 @@ cd
 if systemctl is-enabled userconfig &>/dev/null; then
     echo "pi:raspberry" | sudo chpasswd
     sudo systemctl disable userconfig
+    # remove "Please note that SSH may not work until a valid user has been set up."
+    sudo rm -f "/usr/share/userconf-pi/sshd_banner"
     sudo systemctl --quiet enable getty@tty1
 fi
 sudo apt-get update
 sudo apt-get -y install git dialog xmlstarlet joystick
-git clone -b "$__chroot_branch" "$__chroot_repo"
+git clone --depth 1 -b "$__chroot_branch" "$__chroot_repo"
+[[ $(id -u) -eq 0 ]] && chown -R pi: RetroPie-Setup
 cd RetroPie-Setup
 modules=(
     'raspbiantools apt_upgrade'
@@ -218,12 +234,13 @@ sudo apt-get clean
 _EOF_
 
     # chroot and run install script
-    rp_callModule image chroot "$chroot" bash /home/pi/install.sh
+    rp_callModule image chroot "$chroot" /bin/bash /home/pi/install.sh
 
     rm "$chroot/home/pi/install.sh"
 
     # remove any ssh host keys that may have been generated during any ssh package upgrades
     rm -f "$chroot/etc/ssh/ssh_host"*
+    rm -f "$chroot/etc/initramfs-tools/conf.d/local.conf"
 }
 
 function _init_chroot_image() {
@@ -278,7 +295,11 @@ function chroot_image() {
 
     printMsgs "console" "Chrooting to $chroot ..."
     _init_chroot_image "$chroot"
-    HOME="/home/pi" chroot --userspec 1000:1000 "$chroot" "$@"
+    if [[ "$__os_debian_ver" -ge 13 ]]; then
+        LC_ALL="C" HOME="/home/pi" chroot --userspec 1000:1000 "$chroot" "$@"
+    else
+        LC_ALL="C" HOME="/home/pi" chroot "$chroot" "$@"
+    fi
     _deinit_chroot_image "$chroot"
 }
 
@@ -348,17 +369,17 @@ function create_image() {
     local boot_path="$(_get_boot_path_image "$chroot")"
 
     # create the boot partition mountpoint and mount
-    mkdir -p "$tmp$boot_path"
-    mount "$part_boot" "$tmp$boot_path"
+    mkdir -p "${tmp}${boot_path}"
+    mount "$part_boot" "${tmp}${boot_path}"
 
     # copy files
     printMsgs "console" "Rsyncing chroot to $image_name ..."
     rsync -aAHX --numeric-ids "$chroot/" "$tmp/"
 
     # we need to fix up the UUIDS for /boot/cmdline.txt and /etc/fstab
-    local old_id="$(sed "s/.*PARTUUID=\([^-]*\).*/\1/" $tmp$boot_path/cmdline.txt)"
+    local old_id="$(sed "s/.*PARTUUID=\([^-]*\).*/\1/" "${tmp}${boot_path}/cmdline.txt")"
     local new_id="$(blkid -s PARTUUID -o value "$part_root" | cut -c -8)"
-    sed -i "s/$old_id/$new_id/" "$tmp$boot_path/cmdline.txt"
+    sed -i "s/$old_id/$new_id/" "${tmp}${boot_path}/cmdline.txt"
     sed -i "s/$old_id/$new_id/g" "$tmp/etc/fstab"
 
     # unmount
